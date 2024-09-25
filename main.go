@@ -4,52 +4,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
-
-const (
-	OK200    = "200 OK"
-	ERROR500 = "500 Internal Server Error"
-	ERROR404 = "404 Not Found"
-	ERROR400 = "400 Bad Request"
-	ERROR401 = "401 Unauthorized"
-	ERROR403 = "403 Forbidden"
-	ERROR411 = "411 Length Required"
-)
-
-const (
-	CONTENT_PLAIN = "text/plain"
-	CONTENT_HTML  = "text/html"
-	CONTENT_JSON  = "application/json"
-)
-
-type Client struct {
-	remoteAddr string
-	conn       net.Conn
-}
 
 type Transaction struct {
 	FromToMap map[string]*PersonReceiver `json:"fromToMap"` // who send how much to whom when
 	Hash      string                     `json:"hash"`
-}
-
-type Block struct {
-	Hash         string        `json:"hash"`
-	Transactions []Transaction `json:"transactions"`
-	Timestamp    time.Time     `json:"timestamp"`
-	Nr           int           `json:"nr"`
-	MerkleRoot   string        `json:"merkle_root"`
-	Count        int           `json:"transaction_count"`
-	Nonce        string        `json:"nonce"`
-	PrevHash     string        `json:"prev_hash"`
 }
 
 type PersonReceiver struct {
@@ -59,10 +28,10 @@ type PersonReceiver struct {
 }
 
 type Message struct {
-	Success bool   `json:"success"`
-	ErrMsg  string `json:"errMsg"`
-	Msg     string `json:"msg"`
-	MsgType string `json:"msgType"`
+	Success bool        `json:"success"`
+	ErrMsg  string      `json:"errMsg"`
+	Msg     interface{} `json:"msg"`
+	MsgType string      `json:"msgType"`
 }
 
 // Server  >
@@ -88,7 +57,6 @@ func sha256encode(val []byte) string {
 	h.Write([]byte(val))
 
 	bs := h.Sum(nil)
-
 	return hex.EncodeToString(bs)
 }
 
@@ -188,9 +156,9 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 
 				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
+				res := HTTPResponse{status: ERROR500, headers: map[string]string{"Content-Type": CONTENT_JSON}, ctxHeaders: headers, data: string(messageBackJsonBytes)}
 
-				conn.Write(dataToWriteBack)
+				conn.Write(res.buildBytes())
 
 				return
 			}
@@ -199,11 +167,13 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 		if len(block.Hash) == 0 {
 			messageBack := Message{Success: false, ErrMsg: "Empty block hash abort", Msg: "", MsgType: "block"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{}
+			res.setCtxHeaders(headers)
+			res.setData(messageBack)
+			res.setStatus(ERROR500)
+			res.setHeader("Content-Type", CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 
 			return
 		}
@@ -211,9 +181,10 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 
 	// write block to file
 	// f, err := os.WriteFile(block.Hash + "_" + strconv.FormatInt(block.Timestamp.Unix(), 10) + ".txt")
+	// ^ old style file save (a bit too obscure)
 
 	if !doesBlockAlreadyExist {
-		f, err := os.OpenFile(serverAddresHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(serverAddressHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
 		_, err1 := f.Write([]byte(blockToString(block, blockBodyJson)))
 
@@ -252,7 +223,11 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 
 					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
-					doClientRequest(existingClient.conn, "POST /blockReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n"+string(blockToSend))
+					req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
+					req.setHeader("X-Own-IP", serverAddress)
+
+					// existingClient.doClientRequest("POST /blockReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n" + string(blockToSend))
+					existingClient.conn.Write(req.buildBytes())
 				}
 			}
 		}
@@ -262,11 +237,13 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 	if !isNode {
 		messageBack := Message{Success: true, ErrMsg: "", Msg: "Made block and send it out", MsgType: "block"}
 
-		messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+		res := HTTPResponse{}
+		res.setData(messageBack)
+		res.setStatus(OK200)
+		res.setHeader("Content-Type", CONTENT_JSON)
+		res.setCtxHeaders(headers)
 
-		dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-		conn.Write(dataToWriteBack)
+		conn.Write(res.buildBytes())
 
 		return
 	}
@@ -326,27 +303,19 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 					nodesToReturn.Nodes = append(nodesToReturn.Nodes, nodeString)
 				}
 
-				nodesToReturnJson, err := json.Marshal(nodesToReturn)
+				res := HTTPResponse{}
 
-				var dataToWriteBack []byte
-
-				messageBack := Message{Success: true, ErrMsg: "", Msg: string(nodesToReturnJson), MsgType: "addr"}
-
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+				messageBack := Message{Success: true, ErrMsg: "", Msg: nodesToReturn, MsgType: "addr"}
 
 				headers["Connection"] = "close"
 
-				if err != nil {
-					messageBack := Message{Success: false, ErrMsg: "Error JSON encoding nodes", Msg: "", MsgType: "addr"}
+				res.setStatus(OK200)
+				res.setData(messageBack)
+				res.setHeader("Content-Type", CONTENT_JSON)
+				res.setHeader("X-Own-IP", serverAddress)
+				res.setCtxHeaders(headers)
 
-					messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-
-					dataToWriteBack = dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON, "X-Own-IP": serverAddres}, headers)
-				} else {
-					dataToWriteBack = dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON, "X-Own-IP": serverAddres}, headers)
-				}
-
-				conn.Write(dataToWriteBack)
+				conn.Write(res.buildBytes())
 				mux.Unlock()
 				return
 			}
@@ -373,44 +342,39 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				nodesToReturn.Nodes = append(nodesToReturn.Nodes, nodeString)
 			}
 
-			nodesToReturnJson, err := json.Marshal(nodesToReturn)
+			res := HTTPResponse{}
 
-			var dataToWriteBack []byte
+			messageBack := Message{Success: true, ErrMsg: "", Msg: nodesToReturn, MsgType: "addr"}
 
-			messageBack := Message{Success: true, ErrMsg: "", Msg: string(nodesToReturnJson), MsgType: "addr"}
+			res.setStatus(OK200)
+			res.setData(messageBack)
+			res.setHeader("Content-Type", CONTENT_JSON)
+			res.setHeader("X-Own-IP", serverAddress)
+			res.setCtxHeaders(headers)
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-
-			if err != nil {
-				messageBack := Message{Success: false, ErrMsg: "Error JSON encoding nodes", Msg: "", MsgType: "addr"}
-
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-
-				dataToWriteBack = dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON, "X-Own-IP": serverAddres}, headers)
-			} else {
-				dataToWriteBack = dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON, "X-Own-IP": serverAddres}, headers)
-			}
-
-			conn.Write(dataToWriteBack)
-		} else if pathParams[0] == "addrSearch" {
-			// implement
+			conn.Write(res.buildBytes())
 		} else if pathParams[0] == "getAllBlocks" {
 			allBlocks := getBlockDataOnDisk()
 
-			allBlocksJson, _ := json.Marshal(allBlocks)
+			messageBack := Message{Success: true, ErrMsg: "", Msg: allBlocks, MsgType: "getAllBlocks"}
 
-			messageBack := Message{Success: true, ErrMsg: "", Msg: string(allBlocksJson), MsgType: "getAllBlocks"}
-			messageBackJsonBytes, _ := json.Marshal(messageBack)
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-			conn.Write(dataToWriteBack)
+			res := HTTPResponse{}
+			res.setData(messageBack)
+			res.setStatus(OK200)
+			res.setCtxHeaders(headers)
+			res.setHeader("Content-Type", CONTENT_JSON)
+
+			conn.Write(res.buildBytes())
 		} else if pathParams[0] == "hello" {
 			messageBack := Message{Success: true, ErrMsg: "", Msg: "Hello There!", MsgType: "hello"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{}
+			res.setData(messageBack)
+			res.setStatus(OK200)
+			res.setCtxHeaders(headers)
+			res.setHeader("Content-Type", CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 		} else if pathParams[0] == "getblocks" {
 			givenBlockHash := ""
 			hasBlockHashGiven := false
@@ -423,11 +387,13 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			if len(givenBlockHash) != 64 && hasBlockHashGiven {
 				messageBack := Message{Success: false, ErrMsg: "Block hash incorrect length. Expected 64-byte sha-256 hash as hex string", Msg: "", MsgType: "getBlocksData"}
 
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+				res := HTTPResponse{}
+				res.setData(messageBack)
+				res.setStatus(ERROR500)
+				res.setCtxHeaders(headers)
+				res.setHeader("Content-Type", CONTENT_JSON)
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-				conn.Write(dataToWriteBack)
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -456,10 +422,15 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			if !foundBlock && hasBlockHashGiven {
 				// hash was given but no block found return error
+				res := HTTPResponse{}
+
 				messageBack := Message{Success: false, ErrMsg: "Did not find block corresponding to hash", Msg: "", MsgType: "getBlocks"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR404, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+
+				res.setData(messageBack)
+				res.setStatus(ERROR404)
+				res.setCtxHeaders(headers)
+				res.setHeader("Content-Type", CONTENT_JSON)
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -477,24 +448,26 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				}
 			}
 
-			blockHashesJson, _ := json.Marshal(blockHashes)
+			messageBack := Message{Success: true, ErrMsg: "", Msg: blockHashes, MsgType: "getBlocks"}
 
-			messageBack := Message{Success: true, ErrMsg: "", Msg: string(blockHashesJson), MsgType: "getBlocks"}
+			res := HTTPResponse{}
+			res.setData(messageBack)
+			res.setStatus(OK200)
+			res.setCtxHeaders(headers)
+			res.setHeader("Content-Type", CONTENT_JSON)
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 		} else if pathParams[0] == "getblockdata" {
 			if len(pathParams) < 2 {
 				messageBack := Message{Success: false, ErrMsg: "Block hash not given", Msg: "", MsgType: "getBlocksData"}
 
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+				res := HTTPResponse{}
+				res.setData(messageBack)
+				res.setStatus(ERROR500)
+				res.setCtxHeaders(headers)
+				res.setHeader("Content-Type", CONTENT_JSON)
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-				conn.Write(dataToWriteBack)
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -503,11 +476,11 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			if len(givenBlockHash) != 64 {
 				messageBack := Message{Success: false, ErrMsg: "Block hash incorrect length. Expected 64-byte sha-256 hash as hex string", Msg: "", MsgType: "getBlocksData"}
 
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader("Content-Type", CONTENT_JSON)
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-				conn.Write(dataToWriteBack)
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -516,38 +489,34 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			for _, blockOnDisk := range blocksOnDisk {
 				if blockOnDisk.Hash == givenBlockHash {
 					// found the block
+					messageBack := Message{Success: true, ErrMsg: "", Msg: blockOnDisk, MsgType: "getBlocksData"}
 
-					blockAsJson, _ := json.Marshal(blockOnDisk)
+					res := HTTPResponse{status: OK200, ctxHeaders: headers}
+					res.setData(messageBack)
+					res.setHeader("Content-Type", CONTENT_JSON)
 
-					messageBack := Message{Success: true, ErrMsg: "", Msg: string(blockAsJson), MsgType: "getBlocksData"}
-
-					messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-
-					dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-					conn.Write(dataToWriteBack)
+					conn.Write(res.buildBytes())
 					return
 				}
 			}
 
 			messageBack := Message{Success: false, ErrMsg: "No block found", Msg: "", MsgType: "getBlocksData"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{status: ERROR404, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader("Content-Type", CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR404, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 
 		} else {
 			messageBack := Message{Success: false, ErrMsg: "Did not find specified path!", Msg: "", MsgType: "no-route"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{status: ERROR404, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR404, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 		}
-		break
 	case "POST":
 		if pathParams[0] == "transaction" {
 			// Get transaction data and send it to other active nodes, API endpoint for outside use
@@ -560,11 +529,12 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				fmt.Println(err)
 
 				messageBack := Message{Success: false, ErrMsg: "Incorrect transaction format, check", Msg: "", MsgType: "transaction"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
+				conn.Write(res.buildBytes())
 				return // conn write error and the break
 			}
 
@@ -584,10 +554,12 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				fmt.Println(err)
 
 				messageBack := Message{Success: false, ErrMsg: "Internal server transaction error!", Msg: "", MsgType: "transaction"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
 
 				return
 			}
@@ -666,7 +638,10 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
-							doClientRequest(existingClient.conn, "POST /transactionReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n"+string(transactionToSend))
+							req := HTTPRequest{requestType: REQ_POST, path: "/transactionReceive", version: VERSION1_1, data: string(transactionToSend)}
+							req.setHeader("X-Own-IP", serverAddress)
+
+							existingClient.conn.Write(req.buildBytes())
 						}
 					}
 				}
@@ -678,19 +653,23 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			if alreadyExistsThisTransaction {
 				// send back response to initial caller, transaction already exists in mempool or blocks
 				messageBack := Message{Success: false, ErrMsg: "Accepted transaction. This transaction already exists. Discarded transaction", Msg: "", MsgType: "transaction"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+				res := HTTPResponse{status: OK200, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
 				return
 			}
 
 			// send back response to initial caller, new transaction, all good
 			messageBack := Message{Success: true, ErrMsg: "", Msg: "Accepted transaction, delivered to known nodes", MsgType: "transaction"}
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-			conn.Write(dataToWriteBack)
+			res := HTTPResponse{status: OK200, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+			conn.Write(res.buildBytes())
 			return
 		} else if pathParams[0] == "transactionReceive" {
 			var receivedTransaction Transaction
@@ -701,10 +680,12 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				fmt.Printf("Error unmarshaling transaction: (%s)", err)
 
 				messageBack := Message{Success: false, ErrMsg: "Transaction receive error", Msg: "", MsgType: "transactionReceive"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -763,23 +744,22 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 								continue
 							}
 
-							if !ok {
-								// no client, connect if possible and set node to active
-							} else {
+							if ok {
 								// there is existing client retrieve it
 
 								existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
 
-								if !ok {
-									// no client exists, connect if possible and set node to active
-								} else {
+								if ok {
 									// client exists do request
 									// jsonMarshal transaction and send it over
 									transactionToSend, _ := json.Marshal(receivedTransaction) // I doubt there will be an error here :D
 
 									fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
-									doClientRequest(existingClient.conn, "POST /transactionReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n"+string(transactionToSend))
+									req := HTTPRequest{requestType: REQ_POST, path: "/transactionReceive", version: VERSION1_1, data: string(transactionToSend)}
+									req.setHeader("X-Own-IP", serverAddress)
+
+									existingClient.conn.Write(req.buildBytes())
 								}
 							}
 						}
@@ -790,11 +770,11 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			messageBack := Message{Success: true, ErrMsg: "", Msg: "Transaction received. Thank You! Hash:" + receivedTransaction.Hash, MsgType: "transactionReceive"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{status: OK200, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 
 			// receive transaction and send it to other nodes (transaction is received from a node and not the API), so check that there is an X-Own-IP header
 		} else if pathParams[0] == "blockReceive" {
@@ -810,10 +790,12 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				fmt.Printf("Error unmarshaling block: (%s) (%s)|||", err, requestPayload)
 
 				messageBack := Message{Success: false, ErrMsg: "Internal server block error!", Msg: "", MsgType: "blockReceive"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // pretty sure it won't fail unless some magical thing happens
 
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
 
 				return
 			}
@@ -849,18 +831,25 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				// send back response that we got the block but we're behind
 
 				messageBack := Message{Success: false, ErrMsg: "", Msg: "Block received. But we're behind in blocks. Will sync", MsgType: "blockReceive"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
-				doClientRequest(conn, "GET /getAllBlocks HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n")
+
+				res := HTTPResponse{status: OK200, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
+
+				conn.Write([]byte("GET /getAllBlocks HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n"))
 				return
 			} else if receivedBlock.Nr <= lastBlockBiggestNr {
 				// received block either has the same nr or is lower!
 				// that means we got a block from a node that is behind, discard the block, send back response
 				messageBack := Message{Success: false, ErrMsg: "", Msg: "Block received. But you're behind, will discard this block. Sync", MsgType: "blockReceive"}
-				messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
-				dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-				conn.Write(dataToWriteBack)
+
+				res := HTTPResponse{status: OK200, ctxHeaders: headers}
+				res.setData(messageBack)
+				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+				conn.Write(res.buildBytes())
 				return
 			}
 
@@ -868,7 +857,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				// such block does not exist yet so add it to files, send to other
 				// write block to file
 				// f, err := os.Create(receivedBlock.Hash + "_" + strconv.FormatInt(receivedBlock.Timestamp.Unix(), 10) + ".txt")
-				f, err := os.OpenFile(serverAddresHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				f, err := os.OpenFile(serverAddressHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 
 				blockBodyJson, _ := json.Marshal(receivedBlock.Transactions)
 
@@ -909,7 +898,9 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
-							doClientRequest(existingClient.conn, "POST /blockReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n"+string(blockToSend))
+							req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
+							req.setHeader("X-Own-IP", serverAddress)
+							existingClient.conn.Write(req.buildBytes())
 						}
 					}
 				}
@@ -918,139 +909,29 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			messageBack := Message{Success: true, ErrMsg: "", Msg: "Block received. Thank You! Hash:" + receivedBlock.Hash, MsgType: "blockReceive"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{status: OK200, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), OK200, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 		} else {
 			messageBack := Message{Success: false, ErrMsg: "No such POST route!", Msg: "", MsgType: "no-route"}
 
-			messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+			res := HTTPResponse{status: ERROR404, ctxHeaders: headers}
+			res.setData(messageBack)
+			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
-			dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR404, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-			conn.Write(dataToWriteBack)
+			conn.Write(res.buildBytes())
 		}
-		break
 	default:
 		messageBack := Message{Success: false, ErrMsg: "Server does not support this HTTP request type", Msg: "", MsgType: "no-route"}
 
-		messageBackJsonBytes, _ := json.Marshal(messageBack) // cannot fail under normal circumstances
+		res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+		res.setData(messageBack)
+		res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
 
-		dataToWriteBack := dataToWrite(string(messageBackJsonBytes), ERROR500, map[string]string{"Content-Type": CONTENT_JSON}, headers)
-
-		conn.Write(dataToWriteBack)
-		break
+		conn.Write(res.buildBytes())
 	}
-}
-
-// Return the hash + timestamp (as iso string) of blocks on disk
-func getBlocksHashTimestampOnDisk() [][]string {
-	ledgerFileData, err := os.ReadFile(serverAddresHash + ".txt")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ledgerFileDataStringsplitted := strings.Split(string(ledgerFileData), "\r\n")
-
-	blockData := [][]string{}
-
-	ledgerFileDataStringsplitted = ledgerFileDataStringsplitted[:len(ledgerFileDataStringsplitted)-1]
-
-	for _, e := range ledgerFileDataStringsplitted {
-		// only block files are .txt files in this P2P network
-		// this is a block, get hash from filenames
-		splitted := strings.Split(e, "\n")
-
-		blockTimestamp := splitted[1]
-
-		blockHash := splitted[0]
-
-		blockData = append(blockData, []string{blockHash, blockTimestamp})
-	}
-
-	return blockData
-}
-
-func getBlockDataOnDisk() []*Block {
-	ledgerFileData, err := os.ReadFile(serverAddresHash + ".txt")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ledgerFileDataStringsplitted := strings.Split(string(ledgerFileData), "\r\n")
-
-	ledgerFileDataStringsplitted = ledgerFileDataStringsplitted[:len(ledgerFileDataStringsplitted)-1]
-
-	var blocks []*Block
-
-	for _, e := range ledgerFileDataStringsplitted {
-		blocks = append(blocks, blockStringToBlock(e))
-	}
-
-	return blocks
-}
-
-func blockToString(block Block, blockBodyJson []byte) string {
-	blockString := ""
-
-	blockString += block.Hash + "\n"
-	blockString += block.Timestamp.Format(time.RFC3339) + "\n"
-	blockString += "--- raw json start\n"
-	blockString += string(blockBodyJson) + "\n"
-	blockString += "--- raw json end\n"
-	blockString += ">>> transactions:\n"
-
-	for _, transaction := range block.Transactions {
-		for key, val := range transaction.FromToMap {
-			floatVal := fmt.Sprintf("%f", val.Value)
-			blockString += key + " sent " + floatVal + " to " + val.Name + " at " + val.Timestamp.Format(time.RFC3339) + "\n"
-		}
-	}
-
-	blockString += ">>>\n"
-	blockString += "count: " + strconv.Itoa(block.Count) + "\n"
-	blockString += "nr: " + strconv.Itoa(block.Nr) + "\n"
-	blockString += "prev_hash: " + block.PrevHash + "\n"
-	blockString += "merkle_root: " + block.MerkleRoot + "\n"
-	blockString += "nonce: " + block.Nonce + "\n"
-	blockString += "<<<\r\n"
-
-	return blockString
-}
-
-func blockStringToBlock(blockString string) *Block {
-	blockStringSplitted := strings.Split(blockString, "\n")
-
-	var block Block
-
-	block.Hash = blockStringSplitted[0]
-
-	time, err := time.Parse(time.RFC3339, blockStringSplitted[1])
-
-	if err != nil {
-		return nil
-	}
-
-	block.Timestamp = time
-
-	transactionsJsonString := blockStringSplitted[3]
-	err2 := json.Unmarshal([]byte(transactionsJsonString), &block.Transactions)
-
-	if err2 != nil {
-		return nil
-	}
-
-	block.Nr, _ = strconv.Atoi(strings.TrimSpace(strings.Split(blockStringSplitted[len(blockStringSplitted)-5], ":")[1]))
-	block.Count, _ = strconv.Atoi(strings.TrimSpace(strings.Split(blockStringSplitted[len(blockStringSplitted)-6], ":")[1]))
-	block.PrevHash = strings.TrimSpace(strings.Split(blockStringSplitted[len(blockStringSplitted)-4], ":")[1])
-	block.MerkleRoot = strings.TrimSpace(strings.Split(blockStringSplitted[len(blockStringSplitted)-3], ":")[1])
-	block.Nonce = strings.TrimSpace(strings.Split(blockStringSplitted[len(blockStringSplitted)-2], ":")[1])
-
-	return &block
 }
 
 func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[string]string, connType string) {
@@ -1062,7 +943,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 
 	mux.Lock()
 	val, ok := headers["X-Own-IP"]
-	connectionHeaderVal, _ := headers["Connection"] // inter-node calls always have the header
+	connectionHeaderVal := headers["Connection"] // inter-node calls always have the header
 	if ok {
 		_, doesAddrExistAlready := existingNodesAddresses[val]
 
@@ -1091,7 +972,13 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 	switch message.MsgType {
 	case "addr":
 		var gotNodes InitialNodes
-		json.Unmarshal([]byte(message.Msg), &gotNodes)
+
+		err := mapToObj(message.Msg, &gotNodes)
+
+		if err != nil {
+			fmt.Printf("There was an error receiving nodes!\n")
+			return
+		}
 
 		fmt.Println(gotNodes)
 		fmt.Println(currentConnections)
@@ -1115,7 +1002,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 
 				_, ok := existingNodesAddresses[nodeAddr]
 
-				if !ok && nodeAddr != serverAddres {
+				if !ok && nodeAddr != serverAddress {
 					// such node does not exist yet, add it, connect to it
 					client := connectToClient(nodeAddr)
 
@@ -1128,45 +1015,47 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 
 					// Request neighbors from other nodes
 					existingClientsAddresses[client.remoteAddr] = client
-					// existingNodeToClientMap[nodeAddr] = client.remoteAddr
-					// existingClientToNodeMap[client.remoteAddr] = nodeAddr
 
-					// existingNodesAddresses[nodeAddr] = &Node{ip: splitted[0], port: splitted[1], active: true}
+					req := HTTPRequest{requestType: REQ_GET, path: "/addr", version: VERSION1_1}
+					req.setHeader("X-Own-IP", serverAddress)
 
-					// fmt.Println(client.conn.LocalAddr().String(), client.conn.RemoteAddr().String())
-
-					doClientRequest(client.conn, "GET /addr HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n") // nodes as JSON string {"nodes": []}
+					client.conn.Write(req.buildBytes()) // nodes as JSON string {"nodes": []}
 				}
 			}
 		}
 		mux.Unlock()
-		break
 	case "transaction":
 		// got response from sending transaction
 		break
 	case "transactionReceive":
 		mux.RLock()
 
-		nodeAddr, _ := existingClientToNodeMap[conn.RemoteAddr().String()]
+		nodeAddr := existingClientToNodeMap[conn.RemoteAddr().String()]
 		mux.RUnlock()
 
 		if message.Success {
-			transactionHash := strings.Split(message.Msg, ":")[1]
-
-			mux.RLock()
-			_, ok := transactions[transactionHash]
-			mux.RUnlock()
-
-			var receivedString string
+			msgString, ok := message.Msg.(string)
 
 			if ok {
-				receivedString = "has already received"
-			} else {
-				receivedString = "first time received"
-			}
+				transactionHash := strings.Split(msgString, ":")[1]
 
-			fmt.Printf("This node: (%s), received transaction from client (%s) which corresponds to node (%s). This node %s this transaction\n", serverAddres, conn.RemoteAddr().String(), nodeAddr, receivedString)
-			break
+				mux.RLock()
+				_, ok := transactions[transactionHash]
+				mux.RUnlock()
+
+				var receivedString string
+
+				if ok {
+					receivedString = "has already received"
+				} else {
+					receivedString = "first time received"
+				}
+
+				fmt.Printf("This node: (%s), received transaction from client (%s) which corresponds to node (%s). This node %s this transaction\n", serverAddress, conn.RemoteAddr().String(), nodeAddr, receivedString)
+				break
+			} else {
+				fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
+			}
 		} else {
 			fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
 		}
@@ -1175,19 +1064,35 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 		if !message.Success {
 			// failed
 			// check if we're behind
-			msgSplitted := strings.Split(message.Msg, ".")
-			if strings.TrimSpace(msgSplitted[len(msgSplitted)-1]) == "Sync" {
-				// sync
-				doClientRequest(conn, "GET /getAllBlocks HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n")
+			msgString, ok := message.Msg.(string)
+
+			if ok {
+				msgSplitted := strings.Split(msgString, ".")
+				if strings.TrimSpace(msgSplitted[len(msgSplitted)-1]) == "Sync" {
+					// sync
+					conn.Write([]byte("GET /getAllBlocks HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n"))
+				}
+			} else {
+				fmt.Println("There was an error receiving a block!")
 			}
 		}
 	case "getAllBlocks":
 		if message.Success {
 			var receivedBlocks []Block
 
-			json.Unmarshal([]byte(message.Msg), &receivedBlocks)
+			receivedBlocksAny := message.Msg.([]interface{})
+			for _, receivedBlockAny := range receivedBlocksAny {
+				var block Block
+				err := mapToObj(receivedBlockAny, &block)
 
-			f, err := os.OpenFile(serverAddresHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+				if err != nil {
+					fmt.Println("There was an error receiving all blocks!")
+					return
+				}
+				receivedBlocks = append(receivedBlocks, block)
+			}
+
+			f, err := os.OpenFile(serverAddressHash+".txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 
 			for _, block := range receivedBlocks {
 				blockBodyJson, _ := json.Marshal(block.Transactions)
@@ -1212,31 +1117,6 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 func getPathParams(httpString string) []string {
 	pathParams := strings.Split(strings.Split(httpString, " ")[1], "/")
 	return pathParams[1:] // first elem is empty string
-}
-
-func getPathParamsValues(pathParams []string, paramsWithValues []string) map[string]string {
-	pathParamsWithValues := map[string]string{}
-
-	paramsWithValuesMap := map[string]int{}
-
-	for index, paramWithValue := range paramsWithValues {
-		paramsWithValuesMap[paramWithValue] = index
-	}
-
-	for index, pathParam := range pathParams {
-		_, ok := paramsWithValuesMap[pathParam]
-		if !ok {
-			// There no such path param with value
-			continue
-		}
-
-		// next val in the list of pathParams is the actual value of the parameter
-		pathParamVal := pathParams[index+1]
-
-		pathParamsWithValues[pathParam] = pathParamVal
-	}
-
-	return pathParamsWithValues
 }
 
 func getQueryParams(httpString string) map[string]string {
@@ -1265,35 +1145,6 @@ func getQueryParams(httpString string) map[string]string {
 	return queryParams
 }
 
-func dataToWrite(data string, status string, headers map[string]string, requestHeaders map[string]string) []byte {
-	dataToWriteBack := "HTTP/1.1 "
-	dataToWriteBack += status + "\r\n"
-
-	for key, val := range headers {
-		dataToWriteBack += key + ":" + val + "\r\n"
-	}
-
-	contentLength := len(data)
-
-	dataToWriteBack += "Content-Length:" + strconv.Itoa(contentLength) + "\r\n"
-
-	connectionType, ok := requestHeaders["Connection"]
-
-	if ok {
-		if strings.ToLower(connectionType) != "keep-alive" {
-			dataToWriteBack += "Connection: close\r\n"
-		} else {
-			dataToWriteBack += "Connection: keep-alive\r\n"
-		}
-	}
-
-	dataToWriteBack += "\r\n"
-
-	dataToWriteBack += data
-
-	return []byte(dataToWriteBack)
-}
-
 func NewServer(listenAddr string) *Server {
 	return &Server{
 		listenAddr: listenAddr,
@@ -1303,16 +1154,17 @@ func NewServer(listenAddr string) *Server {
 
 func (s *Server) Start() error {
 	ln, err := net.Listen("tcp4", s.listenAddr)
+
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Server started on %s\r\n", ln.Addr().String())
-	serverAddres = ln.Addr().String()
+	serverAddress = ln.Addr().String()
 
-	serverAddresHash = strings.ReplaceAll(strings.ReplaceAll(serverAddres, ".", ""), ":", "")
+	serverAddressHash = strings.ReplaceAll(strings.ReplaceAll(serverAddress, ".", ""), ":", "")
 
-	f, err := os.OpenFile(serverAddresHash+".txt", os.O_CREATE|os.O_APPEND, 0666)
+	f, _ := os.OpenFile(serverAddressHash+".txt", os.O_CREATE|os.O_APPEND, 0666)
 	f.Close()
 
 	// Connect to initial nodes and get the nodes they have
@@ -1331,12 +1183,12 @@ func (s *Server) Start() error {
 			case <-ticker.C:
 				fmt.Println(existingNodesAddresses)
 				fmt.Println(currentConnections)
-				// connectToInitialNodes()
+				connectToInitialNodes()
 			case <-ticker2.C:
 				triedNodes = make(map[string]bool)
 			}
 		}
-	}()
+	}() // async IIFE
 
 	defer ln.Close()
 	s.ln = ln
@@ -1358,7 +1210,7 @@ func connectToInitialNodes() {
 
 		i++
 
-		if mainNodeAddr == serverAddres {
+		if mainNodeAddr == serverAddress {
 			continue
 		}
 
@@ -1377,55 +1229,15 @@ func connectToInitialNodes() {
 
 		// Request neighbors from other nodes
 		existingClientsAddresses[client.remoteAddr] = client
-		// existingNodeToClientMap[mainNodeAddr] = client.remoteAddr
-		// existingClientToNodeMap[client.remoteAddr] = mainNodeAddr
-
-		// splitted := strings.Split(mainNodeAddr, ":")
-		// triedNodes[mainNodeAddr] = true
-
-		// existingNodesAddresses[mainNodeAddr] = &Node{ip: splitted[0], port: splitted[1], active: true}
 
 		fmt.Println(client.conn.LocalAddr().String(), client.conn.RemoteAddr().String())
 
-		doClientRequest(client.conn, "GET /addr HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:"+serverAddres+"\r\n\r\n") // nodes as JSON string {"nodes": []}
+		req := HTTPRequest{requestType: REQ_GET, path: "/addr", version: VERSION1_1}
+		req.setHeader("X-Own-IP", serverAddress)
+
+		client.conn.Write(req.buildBytes()) // nodes as JSON string {"nodes": []}
 	}
 	mux.Unlock()
-}
-
-// get payload from data (request)
-func getPayload(data string) string {
-	msgData := strings.Split(data, "\r\n")
-
-	var msgPayload []string
-	for index, headerString := range msgData[1:] {
-		if headerString != "" {
-			continue
-		} else {
-			msgPayload = msgData[index+1:]
-			break // if line is empty then this is highly likely the data portion line breaker
-		}
-	}
-
-	return strings.Join(msgPayload, "")
-}
-
-// write to client conn
-func doClientRequest(clientConn net.Conn, data string) {
-	dataSplitted := strings.Split(data, "\r\n\r\n")
-
-	if strings.Contains(data, "POST") {
-		// there is some content
-		contentLength := len(dataSplitted[1])
-
-		contentLengthStr := "\r\nContent-Length:" + strconv.Itoa(contentLength)
-		dataSplitted[0] += contentLengthStr
-	}
-
-	dataSplitted[0] += "\r\n\r\n"
-
-	data = strings.Join(dataSplitted, "")
-
-	clientConn.Write([]byte(data))
 }
 
 func connectToClient(addr string) *Client {
@@ -1458,13 +1270,6 @@ func (s *Server) acceptLoop() {
 		existingClientsAddresses[client.remoteAddr] = &client
 		mux.Unlock()
 
-		// connected remote might be anything, perhaps it is not a node. So do not add it as a node
-
-		// remoteAddrSplitted := strings.Split(conn.RemoteAddr().String(), ":")
-		// newNode := Node{ip: remoteAddrSplitted[0], port: remoteAddrSplitted[1], active: true}
-		// nodes = append(nodes, newNode)
-		// existingNodesAddresses[conn.RemoteAddr().String()] = newNode
-
 		go readLoop(conn, "SERVER")
 	}
 }
@@ -1479,7 +1284,7 @@ func readLoop(conn net.Conn, connType string) {
 		if err != nil {
 			fmt.Println("read error", err)
 
-			if err.Error() == "EOF" {
+			if err.Error() == "EOF" || errors.Is(err, syscall.WSAECONNRESET) {
 				// check remote addr
 				fmt.Print(conn.RemoteAddr().String())
 
@@ -1541,11 +1346,13 @@ func readLoop(conn net.Conn, connType string) {
 
 				headers := parseHeaders(headerStrings)
 
-				if requestType == "POST" || strings.Contains(requestType, "HTTP") {
+				requestContainsHttp := strings.Contains(requestType, "HTTP")
+
+				// check for content length regardless. Throw error if content length not given for POST, PUT
+				if requestType == "POST" || requestContainsHttp {
 					// we will have content-length, because it's POST request or an HTTP response
-					contentLength, _ := headers["Content-Length"]
+					contentLength := headers["Content-Length"]
 					contentLengthVal, _ := strconv.Atoi(contentLength)
-					fmt.Printf("Is contentLength longer than content?: %t %v %d", (len(strings.Split(msgString, "\r\n\r\n")[1]) < contentLengthVal), msgString, contentLengthVal)
 					data := strings.Split(msgString, "\r\n\r\n")[1][:contentLengthVal]
 
 					leftOver := strings.Split(msgString, data)[1]
@@ -1555,7 +1362,8 @@ func readLoop(conn net.Conn, connType string) {
 					msgString = ""
 				}
 
-				if strings.Contains(requestType, "HTTP") {
+				// TODO: remove repetition
+				if requestContainsHttp {
 					// request is actually a response, do response
 					doResponse(conn, currentHttpStringsHeadersSplitted, strings.Join(msgPayload, ""), headers, connType)
 				} else {
@@ -1624,11 +1432,10 @@ var existingClientToNodeMap = map[string]string{} // client ip -> node ip if the
 var existingNodeToClientMap = map[string]string{} // node ip -> client ip if the client was a distributed node
 var transactions = map[string]*Transaction{}      // transaction hash -> transaction data
 var existingClientsAddresses = map[string]*Client{}
-var serverAddres string
-var serverAddresHash string
+var serverAddress string
+var serverAddressHash string
 var maxConnections int
 var currentConnections = 0
-var nBeforeHash = 2
 
 var triedNodes = map[string]bool{}
 
@@ -1648,15 +1455,11 @@ func main() {
 	// log.SetFlags(log.Ldate | log.Ltime)
 
 	// Load initial nodes
-	mainNodesJsonFile, err := os.Open("main_nodes.json")
-
 	if err != nil {
 		log.Fatalf("Error opening JSON config file with hardcoded nodes! %v", err)
 	}
 
-	defer mainNodesJsonFile.Close()
-
-	mainNodesJsonFileByteValue, _ := ioutil.ReadAll(mainNodesJsonFile)
+	mainNodesJsonFileByteValue, _ := os.ReadFile("main_nodes.json")
 
 	var initialNodes InitialNodes
 

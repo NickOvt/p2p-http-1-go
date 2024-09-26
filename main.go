@@ -1119,32 +1119,6 @@ func getPathParams(httpString string) []string {
 	return pathParams[1:] // first elem is empty string
 }
 
-func getQueryParams(httpString string) map[string]string {
-	splittedHttpString := strings.Split(httpString, " ")
-	notparsedQueryParams := strings.Split(splittedHttpString[1], "?")
-
-	if len(notparsedQueryParams) < 2 {
-		// If there is no ? then length will be == 1
-		return map[string]string{}
-	}
-
-	queryParams := map[string]string{}
-
-	notparsedQueryParams2 := strings.Split(notparsedQueryParams[1], "&")
-
-	for _, valString := range notparsedQueryParams2 {
-		valStringSplitted := strings.Split(valString, "=")
-		key := valStringSplitted[0]
-		val := valStringSplitted[1]
-
-		queryParams[key] = val
-	}
-
-	// there are query params available
-
-	return queryParams
-}
-
 func NewServer(listenAddr string) *Server {
 	return &Server{
 		listenAddr: listenAddr,
@@ -1348,6 +1322,7 @@ func readLoop(conn net.Conn, connType string) {
 
 				requestContainsHttp := strings.Contains(requestType, "HTTP")
 				contentLength, contentLengthOk := headers["Content-Length"]
+
 				var contentLengthVal int
 				if contentLengthOk {
 					contentLengthVal, _ = strconv.Atoi(contentLength)
@@ -1385,13 +1360,12 @@ func readLoop(conn net.Conn, connType string) {
 					connectionType = "close"
 				}
 
-				if !(strings.ToLower(connectionType) != "keep-alive") {
+				if strings.ToLower(connectionType) == "keep-alive" {
 					// if keep alive then continue
 					continue
 				}
 
 				// else close connection then cleanup
-
 				fmt.Print(conn.RemoteAddr().String())
 
 				mux.RLock()

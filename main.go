@@ -1347,22 +1347,30 @@ func readLoop(conn net.Conn, connType string) {
 				headers := parseHeaders(headerStrings)
 
 				requestContainsHttp := strings.Contains(requestType, "HTTP")
+				contentLength, contentLengthOk := headers["Content-Length"]
+				var contentLengthVal int
+				if contentLengthOk {
+					contentLengthVal, _ = strconv.Atoi(contentLength)
+				}
 
-				// check for content length regardless. Throw error if content length not given for POST, PUT
-				if requestType == "POST" || requestContainsHttp {
-					// we will have content-length, because it's POST request or an HTTP response
-					contentLength := headers["Content-Length"]
-					contentLengthVal, _ := strconv.Atoi(contentLength)
+				if !contentLengthOk && (requestType == "POST" || requestType == "PUT") {
+					// no content length for POST or PUT request
+					conn.Write([]byte("HTTP request with types POST or PUT are not allowed without content-length header!"))
+					conn.Close()
+				}
+
+				if contentLengthOk {
+					// have content length
+					// split
 					data := strings.Split(msgString, "\r\n\r\n")[1][:contentLengthVal]
 
 					leftOver := strings.Split(msgString, data)[1]
 					msgString = leftOver
 					msgPayload = strings.Split(data, "\r\n")
 				} else {
-					msgString = ""
+					msgString = "" // empty the msg string so that we do not continue after the loop
 				}
 
-				// TODO: remove repetition
 				if requestContainsHttp {
 					// request is actually a response, do response
 					doResponse(conn, currentHttpStringsHeadersSplitted, strings.Join(msgPayload, ""), headers, connType)
@@ -1372,76 +1380,60 @@ func readLoop(conn net.Conn, connType string) {
 
 				connectionType, ok := headers["Connection"]
 
-				if ok {
-					if strings.ToLower(connectionType) != "keep-alive" {
-						// check remote addr
-						fmt.Print(conn.RemoteAddr().String())
-
-						mux.RLock()
-						val, ok := existingClientToNodeMap[conn.RemoteAddr().String()]
-						mux.RUnlock()
-
-						if ok {
-							// there is a node corresponding to the closed client connection, delete the connection
-							_, doesNodeExist := existingNodesAddresses[val]
-							mux.Lock()
-							if doesNodeExist {
-								delete(existingNodesAddresses, val)
-							}
-
-							delete(existingClientToNodeMap, conn.RemoteAddr().String())
-							delete(existingNodeToClientMap, val)
-							delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
-							currentConnections--
-							mux.Unlock()
-							fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
-						}
-						return // any non keep-alive connection type results in the connection being closed
-					}
-					continue
-				} else {
-					// Default to no keep-alive
-					mux.RLock()
-					val, ok := existingClientToNodeMap[conn.RemoteAddr().String()]
-					mux.RUnlock()
-
-					if ok {
-						// there is a node corresponding to the closed client connection, delete the connection
-						_, doesNodeExist := existingNodesAddresses[val]
-						mux.Lock()
-						if doesNodeExist {
-							delete(existingNodesAddresses, val)
-						}
-
-						delete(existingClientToNodeMap, conn.RemoteAddr().String())
-						delete(existingNodeToClientMap, val)
-						delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
-						currentConnections--
-						mux.Unlock()
-						fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
-					}
-					return
+				if !ok {
+					// if no connection type header default to close
+					connectionType = "close"
 				}
+
+				if !(strings.ToLower(connectionType) != "keep-alive") {
+					// if keep alive then continue
+					continue
+				}
+
+				// else close connection then cleanup
+
+				fmt.Print(conn.RemoteAddr().String())
+
+				mux.RLock()
+				val, ok := existingClientToNodeMap[conn.RemoteAddr().String()]
+				mux.RUnlock()
+
+				if ok {
+					// there is a node corresponding to the closed client connection, delete the connection
+					_, doesNodeExist := existingNodesAddresses[val]
+					mux.Lock()
+					if doesNodeExist {
+						delete(existingNodesAddresses, val)
+					}
+
+					delete(existingClientToNodeMap, conn.RemoteAddr().String())
+					delete(existingNodeToClientMap, val)
+					delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
+					currentConnections--
+					mux.Unlock()
+					fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
+				}
+				return
 			}
 		}
 	}
 }
 
-var existingNodesAddresses = map[string]*Node{}
-var existingClientToNodeMap = map[string]string{} // client ip -> node ip if the client was a distributed node
-var existingNodeToClientMap = map[string]string{} // node ip -> client ip if the client was a distributed node
-var transactions = map[string]*Transaction{}      // transaction hash -> transaction data
-var existingClientsAddresses = map[string]*Client{}
-var serverAddress string
-var serverAddressHash string
-var maxConnections int
-var currentConnections = 0
+var existingNodesAddresses = map[string]*Node{}     // node ip -> node object
+var existingClientToNodeMap = map[string]string{}   // client ip -> node ip if the client was a distributed node
+var existingNodeToClientMap = map[string]string{}   // node ip -> client ip if the client was a distributed node
+var transactions = map[string]*Transaction{}        // transaction hash -> transaction data
+var existingClientsAddresses = map[string]*Client{} // client ip -> client object
+var serverAddress string                            // server ip and port
+var serverAddressHash string                        // hash of server address
+var maxConnections int                              // max allowed connections
+var currentConnections = 0                          // count of currently active connections
 
-var triedNodes = map[string]bool{}
+var triedNodes = map[string]bool{} // map of node ip -> bool. Used when connecting to new nodes
 
-var mux sync.RWMutex
+var mux sync.RWMutex // syncing mutex
 
-var initialNodesAdresses = []string{}
+var initialNodesAdresses = []string{} // save initial nodes to RAM so to save file reads (it is not expected to hold large amounts of initial nodes)
 
 func main() {
 	f, err := os.OpenFile("serverlog.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -1452,7 +1444,7 @@ func main() {
 	defer f.Close()
 
 	log.SetOutput(f)
-	// log.SetFlags(log.Ldate | log.Ltime)
+	log.SetFlags(log.Ldate | log.Ltime)
 
 	// Load initial nodes
 	if err != nil {
@@ -1462,7 +1454,6 @@ func main() {
 	mainNodesJsonFileByteValue, _ := os.ReadFile("main_nodes.json")
 
 	var initialNodes InitialNodes
-
 	json.Unmarshal(mainNodesJsonFileByteValue, &initialNodes)
 
 	// Parse loaded initial nodes

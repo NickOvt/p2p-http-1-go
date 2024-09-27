@@ -41,6 +41,18 @@ func parseHeaders(headers []string) map[string]string {
 	return headersMap
 }
 
+func parseHeadersString(headers []string) map[string]string {
+	var headerStrings []string
+
+	for _, headerString := range headers {
+		if headerString != "" {
+			headerStrings = append(headerStrings, headerString)
+		}
+	}
+
+	return parseHeaders(headerStrings)
+}
+
 func sha256encode(val []byte) string {
 	h := sha256.New()
 
@@ -48,4 +60,9 @@ func sha256encode(val []byte) string {
 
 	bs := h.Sum(nil)
 	return hex.EncodeToString(bs)
+}
+
+func getPathParams(httpString string) []string {
+	pathParams := strings.Split(strings.Split(httpString, " ")[1], "/")
+	return pathParams[1:] // first elem is empty string
 }

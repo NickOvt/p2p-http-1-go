@@ -1058,11 +1058,6 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 	fmt.Println("================================")
 }
 
-func getPathParams(httpString string) []string {
-	pathParams := strings.Split(strings.Split(httpString, " ")[1], "/")
-	return pathParams[1:] // first elem is empty string
-}
-
 func NewServer(listenAddr string) *Server {
 	return &Server{
 		listenAddr: listenAddr,
@@ -1158,21 +1153,6 @@ func connectToInitialNodes() {
 	mux.Unlock()
 }
 
-func connectToClient(addr string) *Client {
-	clientConn, err := net.Dial("tcp", addr)
-
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-
-	fmt.Printf("Connected to client: %s\n", clientConn.RemoteAddr().String())
-
-	go readLoop(clientConn, "CLIENT")
-
-	return &Client{remoteAddr: clientConn.RemoteAddr().String(), conn: clientConn}
-}
-
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.ln.Accept()
@@ -1253,16 +1233,9 @@ func readLoop(conn net.Conn, connType string) {
 				// if a response then proceed with response
 				requestType := strings.Split(currentHttpStringsHeadersSplitted[0], " ")[0]
 
-				var headerStrings []string
-
 				var msgPayload []string
-				for _, headerString := range currentHttpStringsHeadersSplitted[1:] {
-					if headerString != "" {
-						headerStrings = append(headerStrings, headerString)
-					}
-				}
 
-				headers := parseHeaders(headerStrings)
+				headers := parseHeadersString(currentHttpStringsHeadersSplitted[1:])
 
 				requestContainsHttp := strings.Contains(requestType, "HTTP")
 				contentLength, contentLengthOk := headers["Content-Length"]

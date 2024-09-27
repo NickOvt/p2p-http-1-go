@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,44 +47,6 @@ type Server struct {
 	listenAddr string
 	ln         net.Listener
 	quitch     chan struct{}
-}
-
-func sha256encode(val []byte) string {
-	h := sha256.New()
-
-	h.Write([]byte(val))
-
-	bs := h.Sum(nil)
-	return hex.EncodeToString(bs)
-}
-
-func getMerkleRoot(transactions []Transaction) string {
-	if len(transactions) == 1 {
-		return transactions[0].Hash
-	}
-
-	list := []Transaction{}
-	len := len(transactions)
-
-	i := 0
-	for i < len {
-		currentTransaction := transactions[i]
-		if i+1 >= len {
-			value := currentTransaction.Hash + currentTransaction.Hash
-
-			list = append(list, Transaction{Hash: sha256encode([]byte(value))})
-			break
-		}
-
-		nextTransaction := transactions[i+1]
-		value := currentTransaction.Hash + nextTransaction.Hash
-
-		list = append(list, Transaction{Hash: sha256encode([]byte(value))})
-
-		i += 2
-	}
-
-	return getMerkleRoot(list)
 }
 
 func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
@@ -247,22 +207,6 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 
 		return
 	}
-}
-
-func parseHeaders(headers []string) map[string]string {
-	// Parse headers into a map
-
-	headersMap := make(map[string]string)
-
-	for _, header := range headers {
-		splittedHeader := strings.SplitN(strings.ReplaceAll(header, " ", ""), ":", 2)
-		headerKey := splittedHeader[0]
-		headerValue := splittedHeader[1]
-
-		headersMap[headerKey] = headerValue
-	}
-
-	return headersMap
 }
 
 func doRequest(conn net.Conn, requestData []string, requestPayload string, requestType string, headers map[string]string) {

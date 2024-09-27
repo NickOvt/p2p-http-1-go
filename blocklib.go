@@ -128,3 +128,32 @@ func blockStringToBlock(blockString string) *Block {
 
 	return &block
 }
+
+func getMerkleRoot(transactions []Transaction) string {
+	if len(transactions) == 1 {
+		return transactions[0].Hash
+	}
+
+	list := []Transaction{}
+	len := len(transactions)
+
+	i := 0
+	for i < len {
+		currentTransaction := transactions[i]
+		if i+1 >= len {
+			value := currentTransaction.Hash + currentTransaction.Hash
+
+			list = append(list, Transaction{Hash: sha256encode([]byte(value))})
+			break
+		}
+
+		nextTransaction := transactions[i+1]
+		value := currentTransaction.Hash + nextTransaction.Hash
+
+		list = append(list, Transaction{Hash: sha256encode([]byte(value))})
+
+		i += 2
+	}
+
+	return getMerkleRoot(list)
+}

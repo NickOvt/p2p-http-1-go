@@ -1,5 +1,5 @@
-# Simple P2P network and unsynchronized blockchain in Golang
-> Author: Nikolai Ovtsinnikov 213084 IAIB @ 2024
+# Simple P2P network and synchronised blockchain in Golang
+> Author: NickOvt @ 2024
 
 #### Tech stack:
 1. Golang
@@ -14,9 +14,9 @@
    7. `os` - communication with os. Creating, Reading files etc.
    8. `strconv` - string conversions. int -> str, float -> str, str -> int/float etc.
    9.  `strings` - string manipulation
-   10. `sync` - goroutine syncing
+   10. `sync` - goroutine syncing (Mutexes)
    11. `time` - timestamp and date
-> The project uses no external libraries, everything is done using the Golang provided standard libraries
+> The project uses no external libraries, everything is done using the Golang provided standard libraries (except for `mapstructure`)
 
 #### Main points:
 1. Project does not use built-in HTTP server and built-in HTTP client/server possibilities.  
@@ -35,19 +35,14 @@ incorrect response.
 #### Main P2P related points:
 1. Transactions are held in mempool (i.e RAM) until a block is created, then all the transactions that are in the block  
 are removed from mempool.
-2. Each block is held in the root directory (yes I know I should've made a separate folder for this 🙄).  
-Block filename format is `<block body sha-256 hash>` + `_` + `<block creation unix timestamp>` + `.txt`  
-3. For the reasons of simplicity all nodes are connected to every other available node unless that other node  
-disconnects from the network (goes offline). Main nodes (the nodes that are known to everyone) can be specified in the  
-`main_nodes.json` configuration file. Every node tries to connect to each main node every 5 seconds, because main  
-nodes are to be considered central nodes and if no central node is left then new nodes cannot connect to any other  
-live nodes on the network, so central nodes are crucial for operation.
+2. Each block is kept in a file that has the following naming convention: `<ip of server><port of server>.txt`. All blocks of the corresponding node/server are held in that txt file in a special format.  
+3. Every node is connected to `n` specified nodes (default to `2`). The value can be specified as an argument to the application. Main nodes (the nodes that are known to everyone) can be specified in the `main_nodes.json` config file. Every node tries to connect to each main node every `5` seconds, because main nodes are to be considered central nodes and if no central node is specified then new nodes cannot connect to other nodes (but as any node can be specified as a central node then you can always specify a known node that will allow you to connect to the rest of them). In any case knowing at least one node beforehand is crucial for connecting all nodes together.
 
 ## Working principle
 > Server:
 1. Set up file logging
 2. Load `main_nodes.json`
-3. Get exec params `port` and `ip` if available. 
+3. Get exec params `port` and `ip` if available. `maxConnectionsArg` as third parameter if specified.
 4. TCP server (hereafter just Server) starts on the machine on specified `port` and `ip`. Defaults are `8080` and `0.0.0.0` respectively.
 5. Server loops through the `ip:port` strings in the `main_nodes.json` file and tries to form a connection with the given addresses.
 6. Server executes the accept loop in a Goroutine (listens to connections)
@@ -71,18 +66,20 @@ client also has a readloop that works completely identical to the server readloo
 1. `GET` endpoints
    1. `/addr` - Retrieve the nodes this current node has connections to
    2. `/hello` - Test server connection
+   3. `/getAllBlocks` - Get all blocks data as json list of `Block` objects.
    3. `/getblocks/:blockhash` - Get all block hashes. If blockhash path param is given get blocks after the timestamp of the  
    given block (if it is found)
    4. `/getblockdata/:blockhash` - Get the block data corresponding to the given block hash
    5. `<no-route>` - Error 404
 2. `POST` endpoints:
-   1. `/transaction` - Create a transaction, add it to mempool, if this transaction does not exist yet (different hash) send it to all other nodes
+   1. `/transaction` - Create a transaction, add it to mempool, if this transaction does not exist yet (different hash) send it to all other nodes. After `5` have been received create a `Block`, send it out, clear used 5 transactions from mempool.
    2. `/transactionReceive` - Node received a transaction from other node, check if has in mempool, if not add and spread,  
    otherwise just write back success and do nothing
-   3. `/block` - Create a block with the transactions that the given node currently has. Check if block does not exist on filesystem,  
-   if not write block to file, spread to other nodes. If exists write back success and do nothing
-   4. `/blockReceive` - Node received a block from other nodes, check if already exists on filesystem, if exists write back success and do nothing,  
+   3. `/blockReceive` - Node received a block from other nodes, check if already exists on filesystem, if exists write back success and do nothing,  
    if does not exist add to filesystem and spread to other nodes
-   5. `<no-route>` Error 404
+   4. `<no-route>` Error 404
 
-> @ 2024 by Nikolai Ovtsinnikov 😎👋
+> @ 2024 by NickOvt 😎👋  
+> This if my first Golang project
+>
+> As of 14.10.2024 there is a slight issue in blockchain syncing and it is not synced properly. Will be fixed soon

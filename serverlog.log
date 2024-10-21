@@ -147,3 +147,6 @@
 2024/05/01 00:03:33 listen tcp4 0.0.0.0:8080: bind: address already in use
 2024/05/01 00:03:33 listen tcp4 0.0.0.0:8080: bind: address already in use
 2024/09/24 23:23:36 open 12700115000.txt: The system cannot find the file specified.
+2024/10/15 11:53:08 listen tcp4: lookup tcp4/127.0.0.1: unknown port
+2024/10/15 11:54:55 listen tcp4: lookup tcp4/127.0.0.1: unknown port
+2024/10/18 12:49:50 listen tcp4: lookup tcp4/127.0.0.1: unknown port

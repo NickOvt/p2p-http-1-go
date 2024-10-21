@@ -308,10 +308,12 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			err := json.Unmarshal([]byte(requestPayload), &transaction)
 
-			if err != nil {
-				fmt.Println(err)
+			receivedFromNode := isOwnIpOk
 
-				messageBack := Message{Success: false, ErrMsg: "Incorrect transaction format, check", Msg: "", MsgType: "transaction"}
+			if err != nil {
+				fmt.Printf("Error unmarshaling transaction: (%s)", err)
+
+				messageBack := Message{Success: false, ErrMsg: "Transaction receive error. Incorrect transaction format.", Msg: "", MsgType: "transaction"}
 
 				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
 				res.setData(messageBack)
@@ -321,45 +323,48 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				return // conn write error and the break
 			}
 
-			// add current timestamp to all receivers
-			currentTimestamp := time.Now()
-			for _, val := range transaction.FromToMap {
-				// if !val.Timestamp.IsZero() {
-				val.Timestamp = currentTimestamp
-				// }
+			if !receivedFromNode {
+				// got a transaction from outside connection (not node)
+
+				// add current timestamp to all receivers
+				currentTimestamp := time.Now()
+				for _, val := range transaction.FromToMap {
+					// if !val.Timestamp.IsZero() {
+					val.Timestamp = currentTimestamp
+					// }
+				}
+
+				// add trsansaction hash
+
+				transactionBodyJson, err := json.Marshal(transaction.FromToMap)
+
+				if err != nil {
+					fmt.Println(err)
+
+					messageBack := Message{Success: false, ErrMsg: "Internal server transaction error!", Msg: "", MsgType: "transaction"}
+
+					res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
+					res.setData(messageBack)
+					res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
+
+					conn.Write(res.buildBytes())
+
+					return
+				}
+
+				transaction.Hash = sha256encode(transactionBodyJson)
 			}
-
-			// add trsansaction hash
-
-			transactionBodyJson, err := json.Marshal(transaction.FromToMap)
-
-			if err != nil {
-				fmt.Println(err)
-
-				messageBack := Message{Success: false, ErrMsg: "Internal server transaction error!", Msg: "", MsgType: "transaction"}
-
-				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
-				res.setData(messageBack)
-				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
-
-				conn.Write(res.buildBytes())
-
-				return
-			}
-
-			transaction.Hash = sha256encode(transactionBodyJson)
 
 			createdBlock := false
 
 			// add transaction to mempool
 
+			// check if transaction exists in mempool
 			mux.RLock()
-			_, ok := transactions[transaction.Hash]
+			_, alreadyExistsThisTransaction := transactions[transaction.Hash]
 			mux.RUnlock()
 
-			alreadyExistsThisTransaction := false
-
-			if !ok {
+			if !alreadyExistsThisTransaction {
 				// no such transaction, add it to mempool
 
 				// check that transaction is not present in any known blocks as well
@@ -392,7 +397,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			// check that after adding current transaction there is 5 transactions already
 			if len(transactions) == 5 {
-				createBlock(conn, headers, isOwnIpOk)
+				createBlock(conn, headers, isOwnIpOk, xOwnIpVal)
 				createdBlock = true
 			}
 
@@ -403,7 +408,10 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 					// get connection for the node
 					existingClientRemoteAddr, ok := existingNodeToClientMap[val.ip+":"+val.port]
 
-					fmt.Println(existingClientRemoteAddr)
+					if val.ip+":"+val.port == xOwnIpVal {
+						// do not send block in circular
+						continue
+					}
 
 					if !ok {
 						// no client, connect if possible and set node to active
@@ -421,7 +429,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
-							req := HTTPRequest{requestType: REQ_POST, path: "/transactionReceive", version: VERSION1_1, data: string(transactionToSend)}
+							req := HTTPRequest{requestType: REQ_POST, path: "/transaction", version: VERSION1_1, data: string(transactionToSend)}
 							req.setHeader("X-Own-IP", serverAddress)
 
 							existingClient.conn.Write(req.buildBytes())
@@ -429,13 +437,11 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 					}
 				}
 				mux.Unlock()
-
-				fmt.Println("Transaction send back data to initial conn")
 			}
 
 			if alreadyExistsThisTransaction {
 				// send back response to initial caller, transaction already exists in mempool or blocks
-				messageBack := Message{Success: false, ErrMsg: "Accepted transaction. This transaction already exists. Discarded transaction", Msg: "", MsgType: "transaction"}
+				messageBack := Message{Success: true, Msg: "Accepted transaction. This transaction already exists. Discarded transaction. Hash:" + transaction.Hash, ErrMsg: "", MsgType: "transaction"}
 
 				res := HTTPResponse{status: OK200, ctxHeaders: headers}
 				res.setData(messageBack)
@@ -446,7 +452,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			}
 
 			// send back response to initial caller, new transaction, all good
-			messageBack := Message{Success: true, ErrMsg: "", Msg: "Accepted transaction, delivered to known nodes", MsgType: "transaction"}
+			messageBack := Message{Success: true, ErrMsg: "", Msg: "Accepted transaction, delivered to known nodes. Thank You!. Hash:" + transaction.Hash, MsgType: "transaction"}
 
 			res := HTTPResponse{status: OK200, ctxHeaders: headers}
 			res.setData(messageBack)
@@ -454,112 +460,6 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 			conn.Write(res.buildBytes())
 			return
-		} else if pathParams[0] == "transactionReceive" {
-			var receivedTransaction Transaction
-
-			err := json.Unmarshal([]byte(requestPayload), &receivedTransaction)
-
-			if err != nil {
-				fmt.Printf("Error unmarshaling transaction: (%s)", err)
-
-				messageBack := Message{Success: false, ErrMsg: "Transaction receive error", Msg: "", MsgType: "transactionReceive"}
-
-				res := HTTPResponse{status: ERROR500, ctxHeaders: headers}
-				res.setData(messageBack)
-				res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
-
-				conn.Write(res.buildBytes())
-				return
-			}
-
-			createdBlock := false
-
-			// check if transaction exists in mempool
-			mux.RLock()
-			_, ok := transactions[receivedTransaction.Hash]
-			mux.RUnlock()
-
-			alreadyExistsThisTransaction := false
-
-			if !ok {
-				// such transaction does not exist in the mempool yet,
-				// check if transaction exists in any of the blocks
-				allCurrentBlocks := getBlockDataOnDisk()
-
-				for _, block := range allCurrentBlocks {
-					if alreadyExistsThisTransaction {
-						break
-					}
-					for _, inBlockTransaction := range block.Transactions {
-						if receivedTransaction.Hash == inBlockTransaction.Hash {
-							// this transaction already exists in a known block
-							alreadyExistsThisTransaction = true
-							break
-						}
-					}
-				}
-
-				if !alreadyExistsThisTransaction {
-					// new transaction, add to mempool, send to others
-
-					mux.Lock()
-					transactions[receivedTransaction.Hash] = &receivedTransaction
-					mux.Unlock()
-
-					// check if now there is 5 transactions, if yes, create block and send out
-					if len(transactions) == 5 {
-						createBlock(conn, headers, isOwnIpOk)
-						createdBlock = true
-					}
-
-					if !createdBlock {
-						mux.Lock()
-
-						// send transaction to other nodes
-						for _, val := range existingNodesAddresses {
-							// get connection for the node
-							existingClientRemoteAddr, ok := existingNodeToClientMap[val.ip+":"+val.port]
-
-							fmt.Println(existingClientRemoteAddr)
-
-							if existingClientRemoteAddr == conn.RemoteAddr().String() {
-								// do not send transaction in circular
-								continue
-							}
-
-							if ok {
-								// there is existing client retrieve it
-
-								existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
-
-								if ok {
-									// client exists do request
-									// jsonMarshal transaction and send it over
-									transactionToSend, _ := json.Marshal(receivedTransaction) // I doubt there will be an error here :D
-
-									fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-									req := HTTPRequest{requestType: REQ_POST, path: "/transactionReceive", version: VERSION1_1, data: string(transactionToSend)}
-									req.setHeader("X-Own-IP", serverAddress)
-
-									existingClient.conn.Write(req.buildBytes())
-								}
-							}
-						}
-						mux.Unlock()
-					}
-				}
-			}
-
-			messageBack := Message{Success: true, ErrMsg: "", Msg: "Transaction received. Thank You! Hash:" + receivedTransaction.Hash, MsgType: "transactionReceive"}
-
-			res := HTTPResponse{status: OK200, ctxHeaders: headers}
-			res.setData(messageBack)
-			res.setHeader(HDR_CONTENT_TYPE, CONTENT_JSON)
-
-			conn.Write(res.buildBytes())
-
-			// receive transaction and send it to other nodes (transaction is received from a node and not the API), so check that there is an X-Own-IP header
 		} else if pathParams[0] == "blockReceive" {
 			// else if pathParams[0] == "block" {
 			// 	// get current transactions, put into a block, sent it to other, others remove transactions from mempool as well and add block to their blockchain
@@ -660,7 +560,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 					fmt.Println(existingClientRemoteAddr)
 
-					if existingClientRemoteAddr == conn.RemoteAddr().String() {
+					if existingClientRemoteAddr == xOwnIpVal {
 						// do not send block in circular
 						continue
 					}
@@ -669,7 +569,6 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 						// no client, connect if possible and set node to active
 					} else {
 						// there is existing client retrieve it
-
 						existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
 
 						if !ok {
@@ -807,41 +706,26 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 			}
 		}
 		mux.Unlock()
-	case "transaction":
-		// got response from sending transaction
 		break
-	case "transactionReceive":
-		mux.RLock()
+	case "transaction":
+		// got response from sending/receiving transaction
 
+		mux.RLock()
 		nodeAddr := existingClientToNodeMap[conn.RemoteAddr().String()]
 		mux.RUnlock()
 
 		if message.Success {
-			msgString, ok := message.Msg.(string)
+			_, ok := message.Msg.(string)
 
 			if ok {
-				transactionHash := strings.Split(msgString, ":")[1]
-
-				mux.RLock()
-				_, ok := transactions[transactionHash]
-				mux.RUnlock()
-
-				var receivedString string
-
-				if ok {
-					receivedString = "has already received"
-				} else {
-					receivedString = "first time received"
-				}
-
-				fmt.Printf("This node: (%s), received transaction from client (%s) which corresponds to node (%s). This node %s this transaction\n", serverAddress, conn.RemoteAddr().String(), nodeAddr, receivedString)
-				break
+				fmt.Printf("This node: (%s), received transaction response from client (%s) which corresponds to node (%s). Transaction receive was successful.\n", serverAddress, conn.RemoteAddr().String(), nodeAddr)
 			} else {
 				fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
 			}
 		} else {
 			fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
 		}
+		break
 	case "blockReceive":
 		// check that blockReceive is success: false and if we're behind to appropriate request
 		if !message.Success {

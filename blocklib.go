@@ -159,7 +159,7 @@ func getMerkleRoot(transactions []Transaction) string {
 	return getMerkleRoot(currentTransactionsList)
 }
 
-func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
+func createBlock(conn net.Conn, headers map[string]string, isNode bool, xOwnIpVal string) {
 	// get current transactions, put into a block, sent it to other, others remove transactions from mempool as well and add block to their blockchain
 	var currentTransactions []Transaction
 
@@ -270,7 +270,7 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 
 			fmt.Println(existingClientRemoteAddr)
 
-			if existingClientRemoteAddr == conn.RemoteAddr().String() {
+			if existingClientRemoteAddr == xOwnIpVal {
 				// do not send block in circular
 				continue
 			}
@@ -281,6 +281,11 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool) {
 				// there is existing client retrieve it
 
 				existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
+
+				if existingClient.remoteAddr == xOwnIpVal {
+					// do not send block in circular
+					continue
+				}
 
 				if !ok {
 					// no client exists, connect if possible and set node to active

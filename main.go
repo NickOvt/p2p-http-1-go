@@ -406,35 +406,31 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				mux.Lock()
 				for _, val := range existingNodesAddresses {
 					// get connection for the node
-					existingClientRemoteAddr, ok := existingNodeToClientMap[val.ip+":"+val.port]
+					existingClientRemoteAddr, existingClientRemoteAddrExists := existingNodeToClientMap[val.ip+":"+val.port]
+
+					if !existingClientRemoteAddrExists {
+						continue // did not find client remote address for given connected node (why?)
+					}
 
 					if val.ip+":"+val.port == xOwnIpVal {
 						// do not send block in circular
 						continue
 					}
 
-					if !ok {
-						// no client, connect if possible and set node to active
-					} else {
-						// there is existing client retrieve it
+					existingClient, existingClientExists := existingClientsAddresses[existingClientRemoteAddr]
 
-						existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
-
-						if !ok {
-							// no client exists, connect if possible and set node to active
-						} else {
-							// client exists do request
-							// jsonMarshal transaction and send it over
-							transactionToSend, _ := json.Marshal(transaction) // I doubt there will be an error here :D
-
-							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-							req := HTTPRequest{requestType: REQ_POST, path: "/transaction", version: VERSION1_1, data: string(transactionToSend)}
-							req.setHeader("X-Own-IP", serverAddress)
-
-							existingClient.conn.Write(req.buildBytes())
-						}
+					if !existingClientExists {
+						continue // did not find client object for given connected node (why though??)
 					}
+
+					transactionToSend, _ := json.Marshal(transaction) // I doubt there will be an error here :D
+
+					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
+
+					req := HTTPRequest{requestType: REQ_POST, path: "/transaction", version: VERSION1_1, data: string(transactionToSend)}
+					req.setHeader("X-Own-IP", serverAddress)
+
+					existingClient.conn.Write(req.buildBytes())
 				}
 				mux.Unlock()
 			}
@@ -556,35 +552,31 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				// send block to others
 				for _, val := range existingNodesAddresses {
 					// get connection for the node
-					existingClientRemoteAddr, ok := existingNodeToClientMap[val.ip+":"+val.port]
+					existingClientRemoteAddr, existingClientRemoteAddrExists := existingNodeToClientMap[val.ip+":"+val.port]
 
-					fmt.Println(existingClientRemoteAddr)
+					if !existingClientRemoteAddrExists {
+						continue
+					}
 
 					if existingClientRemoteAddr == xOwnIpVal {
 						// do not send block in circular
 						continue
 					}
 
-					if !ok {
-						// no client, connect if possible and set node to active
-					} else {
-						// there is existing client retrieve it
-						existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
+					existingClient, existingClientExists := existingClientsAddresses[existingClientRemoteAddr]
 
-						if !ok {
-							// no client exists, connect if possible and set node to active
-						} else {
-							// client exists do request
-							// jsonMarshal block and send it over
-							blockToSend, _ := json.Marshal(receivedBlock)
-
-							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-							req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
-							req.setHeader("X-Own-IP", serverAddress)
-							existingClient.conn.Write(req.buildBytes())
-						}
+					if !existingClientExists {
+						continue
 					}
+
+					// jsonMarshal block and send it over
+					blockToSend, _ := json.Marshal(receivedBlock)
+
+					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
+
+					req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
+					req.setHeader("X-Own-IP", serverAddress)
+					existingClient.conn.Write(req.buildBytes())
 				}
 				mux.RUnlock()
 			}
@@ -706,7 +698,6 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 			}
 		}
 		mux.Unlock()
-		break
 	case "transaction":
 		// got response from sending/receiving transaction
 
@@ -840,6 +831,7 @@ func connectToInitialNodes() {
 	// Connect to initial nodes and get the nodes they have
 	i := 0
 	mux.Lock()
+	defer mux.Unlock()
 	// connect to maxConnections - 1 connections (so that there is always one more connection to add from outside)
 	for i < maxConnections-1 && i < len(initialNodesAdresses) {
 		mainNodeAddr := initialNodesAdresses[i]
@@ -873,7 +865,6 @@ func connectToInitialNodes() {
 
 		client.conn.Write(req.buildBytes()) // nodes as JSON string {"nodes": []}
 	}
-	mux.Unlock()
 }
 
 func (s *Server) acceptLoop() {
@@ -917,15 +908,15 @@ func readLoop(conn net.Conn, connType string) {
 					// there is a node corresponding to the closed client connection, delete the connection
 					_, doesNodeExist := existingNodesAddresses[val]
 					mux.Lock()
+					defer mux.Unlock()
+
 					if doesNodeExist {
 						delete(existingNodesAddresses, val)
 					}
-
 					delete(existingClientToNodeMap, conn.RemoteAddr().String())
 					delete(existingNodeToClientMap, val)
 					delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
 					currentConnections--
-					mux.Unlock()
 					fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
 				}
 
@@ -1016,6 +1007,8 @@ func readLoop(conn net.Conn, connType string) {
 					// there is a node corresponding to the closed client connection, delete the connection
 					_, doesNodeExist := existingNodesAddresses[val]
 					mux.Lock()
+					defer mux.Unlock()
+
 					if doesNodeExist {
 						delete(existingNodesAddresses, val)
 					}
@@ -1024,7 +1017,6 @@ func readLoop(conn net.Conn, connType string) {
 					delete(existingNodeToClientMap, val)
 					delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
 					currentConnections--
-					mux.Unlock()
 					fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
 				}
 				return

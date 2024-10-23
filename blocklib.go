@@ -266,43 +266,33 @@ func createBlock(conn net.Conn, headers map[string]string, isNode bool, xOwnIpVa
 		mux.Lock()
 		for _, val := range existingNodesAddresses {
 			// get connection for the node
-			existingClientRemoteAddr, ok := existingNodeToClientMap[val.ip+":"+val.port]
+			existingClientRemoteAddr, existingClientRemoteAddrExists := existingNodeToClientMap[val.ip+":"+val.port]
 
-			fmt.Println(existingClientRemoteAddr)
+			if !existingClientRemoteAddrExists {
+				continue
+			}
 
 			if existingClientRemoteAddr == xOwnIpVal {
 				// do not send block in circular
 				continue
 			}
 
-			if !ok {
-				// no client, connect if possible and set node to active
-			} else {
-				// there is existing client retrieve it
+			existingClient, existingClientExists := existingClientsAddresses[existingClientRemoteAddr]
 
-				existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
-
-				if existingClient.remoteAddr == xOwnIpVal {
-					// do not send block in circular
-					continue
-				}
-
-				if !ok {
-					// no client exists, connect if possible and set node to active
-				} else {
-					// client exists do request
-					// jsonMarshal block and send it over
-					blockToSend, _ := json.Marshal(block)
-
-					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-					req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
-					req.setHeader("X-Own-IP", serverAddress)
-
-					// existingClient.doClientRequest("POST /blockReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n" + string(blockToSend))
-					existingClient.conn.Write(req.buildBytes())
-				}
+			if !existingClientExists {
+				continue
 			}
+
+			// jsonMarshal block and send it over
+			blockToSend, _ := json.Marshal(block)
+
+			fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
+
+			req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
+			req.setHeader("X-Own-IP", serverAddress)
+
+			// existingClient.doClientRequest("POST /blockReceive HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n" + string(blockToSend))
+			existingClient.conn.Write(req.buildBytes())
 		}
 		mux.Unlock()
 	}

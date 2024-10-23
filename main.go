@@ -408,37 +408,8 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 					// get connection for the node
 					existingClientRemoteAddr, existingClientRemoteAddrExists := existingNodeToClientMap[val.ip+":"+val.port]
 
-<<<<<<< HEAD
-					if val.ip+":"+val.port == xOwnIpVal {
-						// do not send block in circular
-						continue
-					}
-
-					if !ok {
-						// no client, connect if possible and set node to active
-					} else {
-						// there is existing client retrieve it
-
-						existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
-
-						if !ok {
-							// no client exists, connect if possible and set node to active
-						} else {
-							// client exists do request
-							// jsonMarshal transaction and send it over
-							transactionToSend, _ := json.Marshal(transaction) // I doubt there will be an error here :D
-
-							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-							req := HTTPRequest{requestType: REQ_POST, path: "/transaction", version: VERSION1_1, data: string(transactionToSend)}
-							req.setHeader("X-Own-IP", serverAddress)
-
-							existingClient.conn.Write(req.buildBytes())
-						}
-=======
 					if !existingClientRemoteAddrExists {
 						continue // did not find client remote address for given connected node (why?)
->>>>>>> 2c165c496514617c8fcc5a89a0cbbcba88e8c838
 					}
 
 					if val.ip+":"+val.port == xOwnIpVal {
@@ -592,32 +563,10 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 						continue
 					}
 
-<<<<<<< HEAD
-					if !ok {
-						// no client, connect if possible and set node to active
-					} else {
-						// there is existing client retrieve it
-						existingClient, ok := existingClientsAddresses[existingClientRemoteAddr]
-
-						if !ok {
-							// no client exists, connect if possible and set node to active
-						} else {
-							// client exists do request
-							// jsonMarshal block and send it over
-							blockToSend, _ := json.Marshal(receivedBlock)
-
-							fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
-
-							req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
-							req.setHeader("X-Own-IP", serverAddress)
-							existingClient.conn.Write(req.buildBytes())
-						}
-=======
 					existingClient, existingClientExists := existingClientsAddresses[existingClientRemoteAddr]
 
 					if !existingClientExists {
 						continue
->>>>>>> 2c165c496514617c8fcc5a89a0cbbcba88e8c838
 					}
 
 					// jsonMarshal block and send it over
@@ -749,10 +698,6 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 			}
 		}
 		mux.Unlock()
-<<<<<<< HEAD
-		break
-=======
->>>>>>> 2c165c496514617c8fcc5a89a0cbbcba88e8c838
 	case "transaction":
 		// got response from sending/receiving transaction
 

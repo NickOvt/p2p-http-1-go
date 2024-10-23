@@ -73,11 +73,9 @@ client also has a readloop that works completely identical to the server readloo
    5. `<no-route>` - Error 404
 2. `POST` endpoints:
    1. `/transaction` - Create a transaction, add it to mempool, if this transaction does not exist yet (different hash) send it to all other nodes. After `5` have been received create a `Block`, send it out, clear used 5 transactions from mempool.
-   2. `/transactionReceive` - Node received a transaction from other node, check if has in mempool, if not add and spread,  
-   otherwise just write back success and do nothing
-   3. `/blockReceive` - Node received a block from other nodes, check if already exists on filesystem, if exists write back success and do nothing,  
+   2. `/blockReceive` - Node received a block from other nodes, check if already exists on filesystem, if exists write back success and do nothing,  
    if does not exist add to filesystem and spread to other nodes
-   4. `<no-route>` Error 404
+   3. `<no-route>` Error 404
 
 > @ 2024 by NickOvt 😎👋  
 > This if my first Golang project

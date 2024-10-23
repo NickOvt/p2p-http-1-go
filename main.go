@@ -716,6 +716,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 		} else {
 			fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
 		}
+		break
 	case "blockReceive":
 		// check that blockReceive is success: false and if we're behind to appropriate request
 		if !message.Success {

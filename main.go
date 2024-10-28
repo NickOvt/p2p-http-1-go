@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"flag"
 	"log"
 	"net"
 	"os"
@@ -68,10 +68,10 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				existingClientToNodeMap[conn.RemoteAddr().String()] = xOwnIpVal
 				existingNodeToClientMap[xOwnIpVal] = conn.RemoteAddr().String()
 
-				fmt.Printf("Added new node from the given HTTP request: client (%s) node (%s) \n", conn.RemoteAddr().String(), xOwnIpVal)
+				log.Printf("Added new node from the given HTTP request: client (%s) node (%s) \n", conn.RemoteAddr().String(), xOwnIpVal)
 			} else {
-				fmt.Println("TOO MANY CONNECTIONS ALREADY DO NOT ADD NODE (Request)")
-				fmt.Printf("Node tried to connect from the given HTTP request: client (%s) node (%s) \n", conn.RemoteAddr().String(), xOwnIpVal)
+				log.Println("TOO MANY CONNECTIONS ALREADY DO NOT ADD NODE (Request)")
+				log.Printf("Node tried to connect from the given HTTP request: client (%s) node (%s) \n", conn.RemoteAddr().String(), xOwnIpVal)
 				// can't accept any more persistent connections, just return known nodes
 				nodesToReturn := InitialNodes{}
 
@@ -311,7 +311,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			receivedFromNode := isOwnIpOk
 
 			if err != nil {
-				fmt.Printf("Error unmarshaling transaction: (%s)", err)
+				log.Printf("Error unmarshaling transaction: (%s)", err)
 
 				messageBack := Message{Success: false, ErrMsg: "Transaction receive error. Incorrect transaction format.", Msg: "", MsgType: "transaction"}
 
@@ -339,7 +339,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				transactionBodyJson, err := json.Marshal(transaction.FromToMap)
 
 				if err != nil {
-					fmt.Println(err)
+					log.Println(err)
 
 					messageBack := Message{Success: false, ErrMsg: "Internal server transaction error!", Msg: "", MsgType: "transaction"}
 
@@ -392,8 +392,8 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				}
 			}
 
-			fmt.Println(existingNodeToClientMap)
-			fmt.Println(existingClientsAddresses)
+			log.Println(existingNodeToClientMap)
+			log.Println(existingClientsAddresses)
 
 			// check that after adding current transaction there is 5 transactions already
 			if len(transactions) == 5 {
@@ -425,7 +425,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 
 					transactionToSend, _ := json.Marshal(transaction) // I doubt there will be an error here :D
 
-					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
+					log.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
 					req := HTTPRequest{requestType: REQ_POST, path: "/transaction", version: VERSION1_1, data: string(transactionToSend)}
 					req.setHeader("X-Own-IP", serverAddress)
@@ -466,7 +466,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 			err := json.Unmarshal([]byte(requestPayload), &receivedBlock)
 
 			if err != nil {
-				fmt.Printf("Error unmarshaling block: (%s) (%s)|||", err, requestPayload)
+				log.Printf("Error unmarshaling block: (%s) (%s)|||", err, requestPayload)
 
 				messageBack := Message{Success: false, ErrMsg: "Internal server block error!", Msg: "", MsgType: "blockReceive"}
 
@@ -543,7 +543,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 				_, err1 := f.Write([]byte(blockToString(receivedBlock, blockBodyJson)))
 
 				if err != nil || err1 != nil {
-					fmt.Println(err, err1)
+					log.Println(err, err1)
 				}
 
 				f.Close()
@@ -572,7 +572,7 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 					// jsonMarshal block and send it over
 					blockToSend, _ := json.Marshal(receivedBlock)
 
-					fmt.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
+					log.Println(existingClient.conn.LocalAddr(), existingClient.conn.RemoteAddr().String())
 
 					req := HTTPRequest{requestType: REQ_POST, path: "/blockReceive", version: VERSION1_1, data: string(blockToSend)}
 					req.setHeader("X-Own-IP", serverAddress)
@@ -609,11 +609,11 @@ func doRequest(conn net.Conn, requestData []string, requestPayload string, reque
 }
 
 func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[string]string, connType string) {
-	fmt.Println("================================")
-	fmt.Println(connType + " read (response):")
-	fmt.Println("================================")
-	fmt.Println(msgData, msgPayload)
-	fmt.Println("================================")
+	log.Println("================================")
+	log.Println(connType + " read (response):")
+	log.Println("================================")
+	log.Println(msgData, msgPayload)
+	log.Println("================================")
 
 	mux.Lock()
 	val, ok := headers["X-Own-IP"]
@@ -630,7 +630,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 			existingClientToNodeMap[conn.RemoteAddr().String()] = val
 			existingNodeToClientMap[val] = conn.RemoteAddr().String()
 
-			fmt.Printf("Added new node from the given HTTP response: client (%s) node (%s) \n", conn.RemoteAddr().String(), val)
+			log.Printf("Added new node from the given HTTP response: client (%s) node (%s) \n", conn.RemoteAddr().String(), val)
 		}
 	}
 	mux.Unlock()
@@ -640,7 +640,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 	err := json.Unmarshal([]byte(msgPayload), &message)
 
 	if err != nil {
-		fmt.Println("Error Unmarshaling message, check data type, probably got response from some 3rd party (non-node)")
+		log.Println("Error Unmarshaling message, check data type, probably got response from some 3rd party (non-node)")
 	}
 
 	switch message.MsgType {
@@ -650,13 +650,13 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 		err := mapToObj(message.Msg, &gotNodes)
 
 		if err != nil {
-			fmt.Printf("There was an error receiving nodes!\n")
+			log.Printf("There was an error receiving nodes!\n")
 			return
 		}
 
-		fmt.Println(gotNodes)
-		fmt.Println(currentConnections)
-		fmt.Println("GOT ADDRS")
+		log.Println(gotNodes)
+		log.Println(currentConnections)
+		log.Println("GOT ADDRS")
 
 		maxConnectionsVariable := -1
 
@@ -709,12 +709,12 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 			_, ok := message.Msg.(string)
 
 			if ok {
-				fmt.Printf("This node: (%s), received transaction response from client (%s) which corresponds to node (%s). Transaction receive was successful.\n", serverAddress, conn.RemoteAddr().String(), nodeAddr)
+				log.Printf("This node: (%s), received transaction response from client (%s) which corresponds to node (%s). Transaction receive was successful.\n", serverAddress, conn.RemoteAddr().String(), nodeAddr)
 			} else {
-				fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
+				log.Printf("There was an error receiving transaction in this node, other node had error\n")
 			}
 		} else {
-			fmt.Printf("There was an error receiving transaction in this node, other node had error\n")
+			log.Printf("There was an error receiving transaction in this node, other node had error\n")
 		}
 		break
 	case "blockReceive":
@@ -731,7 +731,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 					conn.Write([]byte("GET /getAllBlocks HTTP/1.1\r\nConnection:keep-alive\r\nX-Own-IP:" + serverAddress + "\r\n\r\n"))
 				}
 			} else {
-				fmt.Println("There was an error receiving a block!")
+				log.Println("There was an error receiving a block!")
 			}
 		}
 	case "getAllBlocks":
@@ -744,7 +744,7 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 				err := mapToObj(receivedBlockAny, &block)
 
 				if err != nil {
-					fmt.Println("There was an error receiving all blocks!")
+					log.Println("There was an error receiving all blocks!")
 					return
 				}
 				receivedBlocks = append(receivedBlocks, block)
@@ -757,19 +757,19 @@ func doResponse(conn net.Conn, msgData []string, msgPayload string, headers map[
 				_, err1 := f.Write([]byte(blockToString(block, blockBodyJson)))
 
 				if err1 != nil {
-					fmt.Println(err1)
+					log.Println(err1)
 				}
 			}
 
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 			}
 
 			f.Close()
 		}
 	}
 
-	fmt.Println("================================")
+	log.Println("================================")
 }
 
 func NewServer(listenAddr string) *Server {
@@ -786,7 +786,7 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	fmt.Printf("Server started on %s\r\n", ln.Addr().String())
+	log.Printf("Server started on %s\r\n", ln.Addr().String())
 	serverAddress = ln.Addr().String()
 
 	serverAddressHash = strings.ReplaceAll(strings.ReplaceAll(serverAddress, ".", ""), ":", "")
@@ -808,8 +808,8 @@ func (s *Server) Start() error {
 			case <-done:
 				return
 			case <-ticker.C:
-				fmt.Println(existingNodesAddresses)
-				fmt.Println(currentConnections)
+				log.Println(existingNodesAddresses)
+				log.Println(currentConnections)
 				connectToInitialNodes()
 			case <-ticker2.C:
 				triedNodes = make(map[string]bool)
@@ -827,55 +827,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
-func connectToInitialNodes() {
-	// Connect to initial nodes and get the nodes they have
-	i := 0
-	mux.Lock()
-	defer mux.Unlock()
-	// connect to maxConnections - 1 connections (so that there is always one more connection to add from outside)
-	for i < maxConnections-1 && i < len(initialNodesAdresses) {
-		mainNodeAddr := initialNodesAdresses[i]
-
-		i++
-
-		if mainNodeAddr == serverAddress {
-			continue
-		}
-
-		_, ok := existingNodesAddresses[mainNodeAddr]
-
-		if ok {
-			// already have connection for this main node
-			continue
-		}
-
-		client := connectToClient(mainNodeAddr)
-
-		if client == nil {
-			continue
-		}
-
-		// Request neighbors from other nodes
-		existingClientsAddresses[client.remoteAddr] = client
-
-		fmt.Println(client.conn.LocalAddr().String(), client.conn.RemoteAddr().String())
-
-		req := HTTPRequest{requestType: REQ_GET, path: "/addr", version: VERSION1_1}
-		req.setHeader("X-Own-IP", serverAddress)
-
-		client.conn.Write(req.buildBytes()) // nodes as JSON string {"nodes": []}
-	}
-}
-
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
-			fmt.Println("Accept error", err)
+			log.Println("Accept error", err)
 			continue
 		}
 
-		fmt.Println("new connection to the server", conn.RemoteAddr())
+		log.Println("new connection to the server", conn.RemoteAddr())
 		client := Client{remoteAddr: conn.RemoteAddr().String(), conn: conn}
 
 		mux.Lock()
@@ -894,11 +854,11 @@ func readLoop(conn net.Conn, connType string) {
 		n, err := conn.Read(buf) // overwrites buffer
 
 		if err != nil {
-			fmt.Println("read error", err)
+			log.Println("read error", err)
 
 			if err.Error() == "EOF" || errors.Is(err, syscall.WSAECONNRESET) {
 				// check remote addr
-				fmt.Print(conn.RemoteAddr().String())
+				log.Print(conn.RemoteAddr().String())
 
 				mux.RLock()
 				val, ok := existingClientToNodeMap[conn.RemoteAddr().String()]
@@ -917,7 +877,7 @@ func readLoop(conn net.Conn, connType string) {
 					delete(existingNodeToClientMap, val)
 					delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
 					currentConnections--
-					fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
+					log.Printf("Deleted client obj %s", conn.RemoteAddr().String())
 				}
 
 				return
@@ -926,15 +886,15 @@ func readLoop(conn net.Conn, connType string) {
 			continue
 		}
 
-		fmt.Println("_______________________________________")
-		fmt.Println(connType + " read:")
-		fmt.Println("---------------------------------------")
+		log.Println("_______________________________________")
+		log.Println(connType + " read:")
+		log.Println("---------------------------------------")
 
 		// msg := buf[:n]
 		msg := buf[:n]
 		msgString := string(msg)
-		fmt.Println(msgString)
-		fmt.Println("---------------------------------------")
+		log.Println(msgString)
+		log.Println("---------------------------------------")
 
 		// HTTP request/response
 		if strings.Contains(msgString, "HTTP") {
@@ -997,7 +957,7 @@ func readLoop(conn net.Conn, connType string) {
 				}
 
 				// else close connection then cleanup
-				fmt.Print(conn.RemoteAddr().String())
+				log.Print(conn.RemoteAddr().String())
 
 				mux.RLock()
 				val, ok := existingClientToNodeMap[conn.RemoteAddr().String()]
@@ -1017,7 +977,7 @@ func readLoop(conn net.Conn, connType string) {
 					delete(existingNodeToClientMap, val)
 					delete(existingClientsAddresses, conn.RemoteAddr().String()) // remove the client connection from map
 					currentConnections--
-					fmt.Printf("Deleted client obj %s", conn.RemoteAddr().String())
+					log.Printf("Deleted client obj %s", conn.RemoteAddr().String())
 				}
 				return
 			}
@@ -1025,6 +985,7 @@ func readLoop(conn net.Conn, connType string) {
 	}
 }
 
+// TODO: Implement or use BiMap instead
 var existingNodesAddresses = map[string]*Node{}     // node ip -> node object
 var existingClientToNodeMap = map[string]string{}   // client ip -> node ip if the client was a distributed node
 var existingNodeToClientMap = map[string]string{}   // node ip -> client ip if the client was a distributed node
@@ -1042,22 +1003,12 @@ var mux sync.RWMutex // syncing mutex
 var initialNodesAdresses = []string{} // save initial nodes to RAM so to save file reads (it is not expected to hold large amounts of initial nodes)
 
 func main() {
-	f, err := os.OpenFile("serverlog.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-
-	if err != nil {
-		log.Fatalf("Error opening log file!: %v", err)
-	}
-	defer f.Close()
-
-	log.SetOutput(f)
-	log.SetFlags(log.Ldate | log.Ltime)
+	mainNodesJsonFileByteValue, mainNodesFileErr := os.ReadFile("main_nodes.json")
 
 	// Load initial nodes
-	if err != nil {
-		log.Fatalf("Error opening JSON config file with hardcoded nodes! %v", err)
+	if mainNodesFileErr != nil {
+		log.Fatalf("Error opening JSON config file with hardcoded nodes! %v", mainNodesFileErr)
 	}
-
-	mainNodesJsonFileByteValue, _ := os.ReadFile("main_nodes.json")
 
 	var initialNodes InitialNodes
 	json.Unmarshal(mainNodesJsonFileByteValue, &initialNodes)
@@ -1069,25 +1020,28 @@ func main() {
 		initialNodesAdresses = append(initialNodesAdresses, splitted[0]+":"+splitted[1])
 	}
 
-	argsWithoutProg := os.Args[1:]
+	portPtr := flag.String("port", "8080", "Port value")
+	ipPtr := flag.String("ip", "127.0.0.1", "IP value")
+	maxConnectionsPtr := flag.Int("maxconns", 2, "Number of maximum allowed connections")
+	logFilePath := flag.String("logfile", "", "Log file path")
 
-	port := "8080"
-	ip := "0.0.0.0"
-	maxConnectionsArg := 2
+	flag.Parse()
 
-	if len(argsWithoutProg) > 0 {
-		port = argsWithoutProg[0]
+	port := *portPtr
+	ip := *ipPtr
+	maxConnections = *maxConnectionsPtr
+
+	if *logFilePath != "" {
+		f, err := os.OpenFile(*logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+
+		if err != nil {
+			log.Fatalf("Error opening log file!: %v", err)
+		}
+		defer f.Close()
+
+		log.SetOutput(f)
+		log.SetFlags(log.Ldate | log.Ltime)
 	}
-
-	if len(argsWithoutProg) > 1 {
-		ip = argsWithoutProg[1]
-	}
-
-	if len(argsWithoutProg) > 2 {
-		maxConnectionsArg, _ = strconv.Atoi(argsWithoutProg[2])
-	}
-
-	maxConnections = maxConnectionsArg
 
 	server := NewServer(ip + ":" + port)
 
